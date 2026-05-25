@@ -5,7 +5,12 @@ Deterministic terminal pipeline for the MLE Hiring Challenge.
 ## Setup
 
 ```bash
-cd C:\Users\sumit\OneDrive\Desktop\MLE-hiring
+python -m pip install -r requirements.txt
+```
+
+If the evaluator installs dependencies from the implementation folder instead:
+
+```bash
 python -m pip install -r code\requirements.txt
 ```
 
