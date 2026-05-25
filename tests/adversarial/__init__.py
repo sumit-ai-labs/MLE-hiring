@@ -1,0 +1,1 @@
+"""Adversarial hidden-style tests."""
