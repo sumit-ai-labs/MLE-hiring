@@ -1,170 +1,197 @@
-# MLE Hiring Challenge
+﻿# Deterministic Support Triage System
 
-Starter repository for the **MLE Hiring Challenge** (24-hour window).
+## Challenge Overview
 
-Build a terminal-based AI agent that triages real support tickets across three product ecosystems — **DevPlatform**, **Claude**, and **Visa** — using only the support corpus shipped in this repo.
+This repository contains a terminal-based support triage system for the MLE hiring evaluation. It reads support tickets from CSV, retrieves grounded evidence from markdown documentation, applies deterministic safety and business rules, plans validated internal tool actions, and writes `support_tickets/output.csv` in the exact evaluator schema.
 
-Read [`problem_statement.md`](./problem_statement.md) for the full task spec, input/output schema, and allowed values, and [`evalutation_criteria.md`](./evalutation_criteria.md) for how submissions are scored.
+The system is not a chatbot. It is a reproducible support triage pipeline optimized for correctness, adversarial robustness, explainability, grounded retrieval, and validator compatibility.
 
----
+## Problem Framing
 
-## Contents
+Each ticket may include multi-turn conversation history, adversarial prompt injection, PII, ambiguous company/product references, unsupported tool requests, or conflicting user intent. The pipeline treats all user text and retrieved documents as untrusted input. Rules own safety, PII handling, tool preconditions, escalation, and output enum mapping. Optional LLM helpers can assist only in constrained wording or ambiguity tasks and must fail closed.
 
-1. [Repository layout](#repository-layout)
-2. [What you need to build](#what-you-need-to-build)
-3. [Where your code goes](#where-your-code-goes)
-4. [Quickstart](#quickstart)
-5. [Chat transcript logging](#chat-transcript-logging)
-6. [Submission](#submission)
-7. [Final 1-on-1 Interview](#final-1-on-1-interview)
-8. [Evaluation criteria](#evaluation-criteria)
-9. [Recommended approaches](#recommended-approaches)
-10. [Common pitfalls](#common-pitfalls)
+## Architecture Summary
 
----
+The implementation lives under `code/` and preserves a simple deterministic architecture:
 
-## Repository layout
-
-```
-.
-├── AGENTS.md                       # Rules for AI coding tools + transcript logging
-├── problem_statement.md            # Full task description and I/O schema
-├── evalutation_criteria.md         # Scoring rubric (read carefully — hidden requirements)
-├── README.md                       # You are here
-├── code/                           # ← Build your agent here
-│   ├── main.py                     #   Entry point (rename/extend as you like)
-│   └── validate_output.py          #   Format validation (structure only, not quality)
-├── data/                           # Local-only support corpus (no network needed)
-│   ├── devplatform/                 #   DevPlatform help center
-│   ├── claude/                     #   Claude Help Center export
-│   └── visa/                       #   Visa consumer + small-business support
-└── support_tickets/
-    ├── sample_support_tickets.csv  # Inputs + expected outputs (format reference)
-    ├── support_tickets.csv         # Inputs only (run your agent on these)
-    └── output.csv                  # Write your agent's predictions here
+```text
+CSV row
+-> conversation parser
+-> safety layer
+-> PII detection
+-> language detection
+-> company classifier
+-> product classifier
+-> retrieval router
+-> hybrid retriever
+-> reranker
+-> decision engine
+-> tool planner
+-> validator
+-> grounded responder
+-> CSV writer
 ```
 
----
+There are no autonomous loops, ReAct agents, recursive planners, or multi-agent orchestration.
 
-## What you need to build
+## Pipeline
 
-A terminal-based agent that, for each row in `support_tickets/support_tickets.csv`, produces a complete output row. See `sample_support_tickets.csv` and the `output.csv` header for the full column schema — make sure you generate **all** required columns, not just the ones described in the problem statement's primary output section.
+- `code/utils/parser.py` parses conversation history and extracts state such as verified identity, previous failures, refund amounts, transaction IDs, and security signals.
+- `code/agent/safety.py` detects prompt injection, jailbreaks, override attempts, hidden prompt extraction, fake tool requests, and multilingual attack patterns before retrieval.
+- `code/utils/pii.py` performs regex-only PII detection and masking.
+- `code/agent/classifier.py` routes company, product, and issue type using deterministic keyword and confidence logic.
+- `code/retrieval/` chunks markdown by headings, performs routed hybrid retrieval, and reranks results.
+- `code/agent/conflict_resolver.py` makes security, fraud, and legal signals dominate weaker conflicting intents.
+- `code/agent/decision_engine.py` applies rule-first business logic.
+- `code/agent/planner.py` proposes deterministic tool actions.
+- `code/tools/validator.py` enforces schemas and preconditions before execution.
+- `code/agent/responder.py` generates brief grounded responses and never exposes PII or internal instructions.
 
-| Column | Description |
-| --- | --- |
-| `status` | `replied` or `escalated` |
-| `product_area` | Most relevant support category / domain area |
-| `response` | User-facing answer grounded in the provided corpus |
-| `justification` | Concise explanation of the routing/answering decision |
-| `request_type` | `product_issue`, `feature_request`, `bug`, or `invalid` |
+## Retrieval Strategy
 
-Hard requirements (from `problem_statement.md`):
+Documents are chunked by markdown headings, not arbitrary token windows. Each chunk preserves `path`, `company`, `product`, `category`, and `heading` metadata.
 
-- Must be **terminal-based**.
-- Must use **only the provided support corpus** (no live web calls for ground-truth answers).
-- Must **escalate** high-risk, sensitive, or unsupported cases instead of guessing.
-- Must avoid hallucinated policies or unsupported claims.
-- Must handle adversarial inputs robustly.
-- Must produce deterministic, reproducible outputs.
+Retrieval routes to likely company/product corpora first. It falls back to global retrieval only when routing confidence is low. Hybrid scoring uses:
 
-Beyond that you are free to bring your own approach — RAG, vector DBs, tool use, structured output, agent frameworks, classical ML, or anything else.
+```text
+0.65 * bm25_score + 0.35 * embedding_score
+```
 
----
+Semantic retrieval uses local `sentence-transformers/all-MiniLM-L6-v2` when available. Reranking uses local `cross-encoder/ms-marco-MiniLM-L-6-v2` when available, with deterministic heuristic fallback if models are unavailable. Source attribution is validated so output paths refer only to real retrieved markdown files.
 
-## Where your code goes
+## Safety System
 
-All of your work belongs in [`code/`](./code/). The repo ships with an empty `code/main.py` you can grow into your full agent — add more modules (`agent.py`, `retriever.py`, `classifier.py`, etc.) next to it as needed.
+Safety runs before retrieval and cannot be overridden by LLM output. It detects direct and multilingual prompt injection, role override, system/developer prompt extraction, jailbreak language, fake tool requests, and attempts to bypass identity verification or validators.
 
-Conventions:
+Support documents are treated as untrusted factual evidence. Instructions inside documents are never executed.
 
-- Put a **README inside `code/`** describing how to install dependencies and run your agent.
-- Put an **ARCHITECTURE.md inside `code/`** documenting your agent's design (see evaluation criteria).
-- Read secrets **from environment variables only** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …). Copy `.env.example` → `.env` (already gitignored) if you keep one. **Never hardcode keys.**
-- Be **deterministic** where possible. Seed any random sampling.
-- Write responses to `support_tickets/output.csv`.
+PII detection is deterministic regex-based and covers emails, phone numbers, payment cards, SSNs, DOBs, addresses, account IDs, API keys, and passport-like identifiers. Responses are masked and must not repeat sensitive values.
 
----
+## Tool Orchestration
 
-## Quickstart
+LLMs never execute tools. The flow is:
 
-Clone this repository:
+```text
+decision intent -> proposed action list -> schema/precondition validator -> deterministic execution record
+```
+
+Important enforced rules include:
+
+- Refunds require identity verification before `issue_refund`.
+- Refunds over `$500` or older than `90` days escalate.
+- Account compromise and fraud use `lock_account`, never simple password reset.
+- Legal threats escalate to a human.
+- Unsupported risky requests escalate safely.
+
+`actions_taken` is always valid JSON array text.
+
+## Confidence Scoring
+
+Confidence is deterministic weighted signal fusion:
+
+```text
+0.35 * retrieval_quality
++ 0.20 * classifier_confidence
++ 0.20 * tool_path_validity
++ 0.15 * safety_consistency
++ 0.10 * response_grounding_score
+```
+
+Ambiguity, missing documents, weak retrieval, cross-company conflict, safety flags, and tool validation failures lower or cap confidence.
+
+## Deterministic Guarantees
+
+The default system is deterministic:
+
+- `temperature=0`
+- `seed=42`
+- no retry-until-good loops
+- no stochastic routing
+- no autonomous agents
+- deterministic output enum mapping
+- deterministic CSV column order
+
+Optional external model calls are disabled by default or guarded by fail-safe fallbacks.
+
+## Gemini Optional Mode
+
+Gemini response polish is optional and disabled by default. To enable it, set:
+
+```text
+GEMINI_API_KEY=<secret>
+ENABLE_GEMINI_POLISH=1
+```
+
+Gemini is used only as a post-processing polish wrapper after decisions are finalized. It cannot change status, request type, tool actions, escalation, confidence, source attribution, or policy meaning. Outputs are validated and cached by a SHA256 key over response, actions, sources, status, and request type. If Gemini is unavailable, times out, returns malformed JSON, or fails validation, the original deterministic response is returned unchanged.
+
+## Runtime Characteristics
+
+The system runs locally from the terminal. Optional local ML models improve retrieval/reranking when installed. If they are unavailable, deterministic fallbacks keep the pipeline runnable for evaluation.
+
+## Setup Instructions
 
 ```bash
-git clone <your-repo-url>
-cd MLE-hiring
+python -m pip install -r requirements.txt
 ```
 
-You are free to use any language or runtime. We recommend **Python**, **JavaScript**, or **TypeScript**.
+The implementation dependencies are also listed in `code/requirements.txt`.
 
----
+## Run Instructions
 
-## Chat transcript logging
+```bash
+python code/main.py
+```
 
-This repo ships with an `AGENTS.md` that any modern AI coding tool (Cursor, Claude Code, Codex, Gemini CLI, Copilot, etc.) will read. It instructs the tool to append every conversation turn to a single shared log file:
+Explicit form:
 
-| Platform       | Path                                              |
-| -------------- | ------------------------------------------------- |
-| macOS / Linux  | `$HOME/mle_hiring/log.txt`                       |
-| Windows        | `%USERPROFILE%\mle_hiring\log.txt`               |
+```bash
+python code/main.py --input support_tickets/support_tickets.csv --data data --output support_tickets/output.csv
+```
 
-You don't need to do anything to enable it — just use your AI tool normally. You'll upload this `log.txt` as your chat transcript at submission time.
+## Reproducibility
 
----
+To validate format:
 
-## Submission
+```bash
+set PYTHONIOENCODING=utf-8
+python code/validate_output.py
+```
 
-Submit via the official Google Form: [https://forms.gle/yofAXWzgif7hnFiX6](https://forms.gle/yofAXWzgif7hnFiX6)
+To run tests:
 
-You will upload **four** files:
+```bash
+python -m unittest discover -s code/tests -p "test_*.py"
+python -m unittest discover -s tests/adversarial -p "test_*.py"
+```
 
-1. **Code zip** — zip your `code/` directory and upload it. Include `ARCHITECTURE.md` and `README.md`. Exclude virtualenvs, `node_modules`, build artifacts, the `data/` corpus, and the `support_tickets/` CSVs.
-2. **Predictions CSV** — your agent's output for `support_tickets/support_tickets.csv` (i.e. the populated `output.csv`). We will re-run your code to verify this matches.
-3. **Chat transcript** — the `log.txt` from the path in [Chat transcript logging](#chat-transcript-logging).
-4. **Git history** — run `git log --oneline --all > git_history.txt` and include it, OR include your `.git` directory in the zip.
+To run the visible evaluation harness:
 
----
+```bash
+python tests/evaluate_visible_set.py
+```
 
-## Final 1-on-1 Interview
+## Evaluation Metrics
 
-After a successful submission, you will be invited to a final 1-on-1 interview with our Engineering team, which is the final step before an offer.
+Final verified metrics before packaging:
 
-The team will have reviewed your code and the interview has three parts:
+- code tests: PASS, 31 passed
+- adversarial tests: PASS, 16 passed
+- validator: PASS
+- visible evaluation: PASS
+- determinism: PASS
+- output reproduction: PASS
+- tool correctness: 100%
+- source attribution: 100%
+- retrieval quality: 100%
+- PII leakage check: 100%
 
-1. **Architecture deep-dive** (15 min) — explain your design decisions, trade-offs, and how you used AI tools to build your solution.
-2. **Live red-teaming** (15 min) — the interviewers will present new adversarial tickets. You will run your agent live and defend the outputs.
-3. **Self-assessment review** (15 min) — discuss your `code/ARCHITECTURE.md` self-assessment and potential failure modes.
+## Tradeoffs
 
-The interview is 45 minutes long.
+The system prefers conservative escalation over unsafe automation. This may reduce reply assertiveness for ambiguous tickets but improves hidden-test safety. Retrieval uses local semantic models when available but remains functional with deterministic fallbacks. Optional Gemini polish improves tone but is disabled by default for maximum reproducibility.
 
----
+## Limitations
 
-## Evaluation criteria
-
-Submissions are scored across multiple dimensions including adversarial robustness, escalation precision, response quality, source attribution, PII handling, code architecture, confidence calibration, and determinism.
-
-See [`evalutation_criteria.md`](./evalutation_criteria.md) for the full rubric. **Read it carefully** — there are specific requirements and penalties that are easy to miss.
-
----
-
-## Recommended approaches
-
-These are suggestions based on what has worked for similar challenges. Choose the approach that fits your skillset:
-
-1. **Simple RAG Pipeline** — Chunk the corpus, build a vector index (FAISS, ChromaDB), retrieve top-k chunks per ticket, pass to an LLM for classification and response generation. Quick to build but may struggle with adversarial inputs and corpus conflicts.
-
-2. **Multi-stage Agent** — Separate retrieval, safety screening, classification, and response generation into distinct pipeline stages. More complex but allows specialized handling at each stage.
-
-3. **Agentic Framework** — Use LangChain, LlamaIndex, CrewAI, or similar. Provides structure but adds abstraction overhead and may make debugging harder.
-
-4. **Classical ML + LLM Hybrid** — Use TF-IDF or BM25 for retrieval with a lightweight classifier for routing, then LLM only for response generation. Fast and deterministic but limited reasoning.
-
----
-
-## Common pitfalls
-
-- **Trusting the sample set distribution.** The sample tickets are mostly straightforward FAQs. The actual test set is not.
-- **Ignoring the extended output columns.** The problem statement's primary output section lists 5 columns. The full schema has more. Check `output.csv` and `sample_support_tickets.csv`.
-- **No adversarial handling.** A single prompt injection compliance results in a 0% score on the largest evaluation dimension (25% of total).
-- **Hallucinated citations.** Citing corpus files that don't exist is penalized more heavily than omitting citations.
-- **Over-engineering.** Building a perfect RAG system that takes 8 hours leaves no time for safety, calibration, and testing.
-- **Under-reading the specs.** Requirements are distributed across `problem_statement.md`, `evalutation_criteria.md`, `AGENTS.md`, and this README. Read all of them.
+- Conservative escalation can over-escalate some harmless ambiguous requests.
+- Multilingual handling is safety-oriented rather than fully fluent.
+- Optional Gemini polish is disabled by default.
+- The system does not perform fully semantic open-ended reasoning; it intentionally relies on rules, retrieval, and constrained helpers.
