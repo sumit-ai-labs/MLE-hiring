@@ -12,7 +12,7 @@ from agent.decision_engine import decide
 from agent.planner import plan_tools
 from agent.responder import generate_response
 from agent.safety import analyze_safety, clean_support_text
-from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, ENABLE_V2_STATE_MACHINE, ENABLE_V2_STRUCTURED_MEMORY, REPO_ROOT, TOOL_SPEC_PATH
+from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, ENABLE_V2_ROUTED_RETRIEVAL, ENABLE_V2_STATE_MACHINE, ENABLE_V2_STRUCTURED_MEMORY, REPO_ROOT, TOOL_SPEC_PATH
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.ingest import ingest_markdown
 from tools.executor import execute_actions
@@ -70,6 +70,17 @@ class TriageAgent:
             classification.product_area,
             classification.confidence,
         )
+        v2_retrieval_trace = ""
+        if ENABLE_V2_ROUTED_RETRIEVAL:
+            from retrieval_v2.retrieval_adapter import run_shadow_retrieval
+
+            retrieved, v2_retrieval_trace = run_shadow_retrieval(
+                self.retriever,
+                retrieved,
+                retrieval_query,
+                classification,
+                safe_support_text,
+            )
 
         # -> decision engine
         decision = decide(state, safety, classification, len(retrieved))
@@ -138,7 +149,8 @@ class TriageAgent:
                 "PII": f"detected={pii.detected}; categories={pii.categories}",
                 "LANGUAGE": language,
                 "CLASSIFICATION": f"company={classification.company}; product={classification.product_area}; request={classification.internal_request_type}; confidence={classification.confidence}",
-                "RETRIEVAL": _retrieval_diagnostics(classification.company, classification.confidence, retrieved),
+                "RETRIEVAL": _retrieval_diagnostics(classification.company, classification.confidence, retrieved)
+                + (f"\n[V2_SHADOW] {v2_retrieval_trace}" if v2_retrieval_trace else ""),
                 "DECISION": f"status={decision.status}; decision={decision.decision}; risk={final_risk_level}",
                 "TOOLS": actions_taken + (f"; validation_errors={validation.errors}" if validation.errors else ""),
                 "RESPONSE": response[:600],
