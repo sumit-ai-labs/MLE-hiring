@@ -12,7 +12,7 @@ from agent.decision_engine import decide
 from agent.planner import plan_tools
 from agent.responder import generate_response
 from agent.safety import analyze_safety, clean_support_text
-from config import DATA_DIR, DEFAULT_LOG, REPO_ROOT, TOOL_SPEC_PATH
+from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, REPO_ROOT, TOOL_SPEC_PATH
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.ingest import ingest_markdown
 from tools.executor import execute_actions
@@ -68,6 +68,10 @@ class TriageAgent:
 
         # -> decision engine
         decision = decide(state, safety, classification, len(retrieved))
+        if ENABLE_V2_POLICY_ENGINE:
+            from policy_engine.adapter import decide_with_policy_engine
+
+            decision = decide_with_policy_engine(decision, state, safety, classification, len(retrieved))
 
         # -> tool planner -> validator -> executor
         proposed_actions = plan_tools(decision, state)

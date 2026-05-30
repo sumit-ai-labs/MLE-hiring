@@ -1,0 +1,61 @@
+{
+  "policies": [
+    {
+      "name": "refund_over_limit",
+      "priority": 100,
+      "when": {"request_type": "refund", "amount_gt": 500},
+      "result": {
+        "status": "escalated",
+        "risk_level": "high",
+        "decision": "refund_over_limit",
+        "department": "billing",
+        "certainty": 0.92,
+        "needs_tool": true,
+        "response_mode": "escalate"
+      }
+    },
+    {
+      "name": "refund_too_old",
+      "priority": 110,
+      "when": {"request_type": "refund", "age_days_gt": 90},
+      "result": {
+        "status": "escalated",
+        "risk_level": "high",
+        "decision": "refund_too_old",
+        "department": "billing",
+        "certainty": 0.92,
+        "needs_tool": true,
+        "response_mode": "escalate"
+      }
+    },
+    {
+      "name": "refund_needs_verification_or_transaction_details",
+      "priority": 120,
+      "when": {"request_type": "refund", "missing_any": ["identity_verified", "extracted_transaction_id", "extracted_amount"]},
+      "result": {
+        "status": "replied",
+        "risk_level": "medium",
+        "decision": "refund_flow",
+        "department": "billing",
+        "certainty": 0.72,
+        "needs_tool": true,
+        "response_mode": "clarify_or_verify"
+      }
+    },
+    {
+      "name": "refund_ready_for_tool_ack",
+      "priority": 130,
+      "when": {"request_type": "refund", "present_all": ["identity_verified", "extracted_transaction_id", "extracted_amount"]},
+      "result": {
+        "status": "replied",
+        "risk_level": "medium",
+        "decision": "refund_flow",
+        "department": "billing",
+        "certainty": 0.84,
+        "needs_tool": true,
+        "response_mode": "tool_ack"
+      }
+    }
+  ]
+}
+

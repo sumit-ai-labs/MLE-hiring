@@ -1,0 +1,32 @@
+{
+  "policies": [
+    {
+      "name": "legal_escalation",
+      "priority": 10,
+      "when": {"request_type": "legal"},
+      "result": {
+        "status": "escalated",
+        "risk_level": "critical",
+        "decision": "legal_escalation",
+        "department": "legal",
+        "certainty": 0.96,
+        "needs_tool": true,
+        "response_mode": "escalate"
+      }
+    },
+    {
+      "name": "security_lock_account",
+      "priority": 20,
+      "when": {"request_type_one_of": ["account_compromise", "fraud"]},
+      "result": {
+        "status": "escalated",
+        "risk_level": "critical",
+        "decision": "lock_account",
+        "department": "security",
+        "certainty": 0.93,
+        "needs_tool": true,
+        "response_mode": "escalate"
+      }
+    }
+  ]
+}

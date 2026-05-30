@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -45,3 +46,15 @@ RERANK_TOP_K = 5
 CROSS_ENCODER_CANDIDATES = 20
 
 LLM_MODELS = ("gpt-4.1-mini", "gpt-4o-mini")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_V2_POLICY_ENGINE = _env_flag("ENABLE_V2_POLICY_ENGINE", False)
+ENABLE_V2_STATE_MACHINE = _env_flag("ENABLE_V2_STATE_MACHINE", False)
+ENABLE_V2_ROUTED_RETRIEVAL = _env_flag("ENABLE_V2_ROUTED_RETRIEVAL", False)
