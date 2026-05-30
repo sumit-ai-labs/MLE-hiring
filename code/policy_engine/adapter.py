@@ -23,6 +23,8 @@ COMPARE_FIELDS = (
     "response_mode",
 )
 
+_DEFAULT_ENGINE: PolicyEngine | None = None
+
 
 def decide_with_policy_engine(
     v1_result: DecisionResult,
@@ -38,7 +40,7 @@ def decide_with_policy_engine(
     differential tests. Unsupported or mismatched cases fall back to V1.
     """
 
-    policy_result = (engine or PolicyEngine()).evaluate(state, safety, classification, retrieval_count)
+    policy_result = (engine or _default_engine()).evaluate(state, safety, classification, retrieval_count)
     if policy_result is None:
         return v1_result
     return policy_result if decisions_match(v1_result, policy_result) else v1_result
@@ -47,3 +49,9 @@ def decide_with_policy_engine(
 def decisions_match(left: DecisionResult, right: DecisionResult) -> bool:
     return all(getattr(left, field) == getattr(right, field) for field in COMPARE_FIELDS)
 
+
+def _default_engine() -> PolicyEngine:
+    global _DEFAULT_ENGINE
+    if _DEFAULT_ENGINE is None:
+        _DEFAULT_ENGINE = PolicyEngine()
+    return _DEFAULT_ENGINE

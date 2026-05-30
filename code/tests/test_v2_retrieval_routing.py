@@ -102,6 +102,36 @@ class V2RetrievalRoutingTests(unittest.TestCase):
         self.assertIn("expanded_queries", trace)
         self.assertIn("retrieved_docs", trace)
 
+    def test_seed_results_avoid_duplicate_base_retrieval(self):
+        class CountingRetriever:
+            def __init__(self):
+                self.calls = 0
+
+            def retrieve(self, query, company, product_area="", classifier_confidence=0.0, top_k=8):
+                self.calls += 1
+                return [
+                    DocumentChunk(
+                        f"content {query}",
+                        f"data/claude/{self.calls}.md",
+                        "claude",
+                        "billing",
+                        "billing",
+                        "Refund",
+                        score=0.5,
+                        rerank_score=0.5,
+                    )
+                ]
+
+        classification = self._classification("Refund duplicate charge")
+        route = route_retrieval(classification, "Refund duplicate charge")
+        plan = expand_query("Refund duplicate charge", route, max_queries=3)
+        seed = [DocumentChunk("seed", "data/claude/seed.md", "claude", "billing", "billing", "Refund", score=1.0, rerank_score=1.0)]
+        retriever = CountingRetriever()
+        results, trace = retrieve_many(retriever, plan, seed_results=seed)
+        self.assertEqual(retriever.calls, len(plan.expanded_queries) - 1)
+        self.assertEqual(trace.retrieved_docs[0].path, "data/claude/seed.md")
+        self.assertEqual(results[0].path, "data/claude/seed.md")
+
     def test_rollback_safety_flag_default_off(self):
         self.assertFalse(ENABLE_V2_ROUTED_RETRIEVAL)
 

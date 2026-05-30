@@ -15,6 +15,7 @@ def retrieve_many(
     plan: RetrievalQueryPlan,
     top_k_per_query: int = 5,
     final_top_k: int = 5,
+    seed_results: list[DocumentChunk] | None = None,
 ) -> tuple[list[DocumentChunk], RetrievalTrace]:
     trace = RetrievalTrace(
         company_route=plan.route.company,
@@ -25,12 +26,13 @@ def retrieve_many(
     merged: dict[str, DocumentChunk] = {}
     first_seen: dict[str, int] = {}
     for query_index, query in enumerate(plan.expanded_queries):
-        chunks = retriever.retrieve(
+        chunks = list(seed_results or []) if query_index == 0 and seed_results is not None else _cached_retrieve(
+            retriever,
             query,
             plan.route.company,
             plan.route.product_area,
             plan.route.confidence,
-            top_k=top_k_per_query,
+            top_k_per_query,
         )
         for chunk in chunks:
             reason = _selection_reason(query, chunk, query_index)
@@ -55,6 +57,27 @@ def retrieve_many(
     return ranked[:final_top_k], trace
 
 
+def _cached_retrieve(
+    retriever: HybridRetriever,
+    query: str,
+    company: str,
+    product_area: str,
+    confidence: float,
+    top_k: int,
+) -> list[DocumentChunk]:
+    cache = getattr(retriever, "_v2_retrieval_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(retriever, "_v2_retrieval_cache", cache)
+    key = (query, company, product_area, round(float(confidence), 3), int(top_k))
+    if key not in cache:
+        cache[key] = tuple(retriever.retrieve(query, company, product_area, confidence, top_k=top_k))
+        if len(cache) > 512:
+            oldest = next(iter(cache))
+            cache.pop(oldest, None)
+    return [replace(chunk) for chunk in cache[key]]
+
+
 def _rank_key(chunk: DocumentChunk, query_index: int) -> tuple[float, float, int, str]:
     return (chunk.rerank_score, chunk.score, -query_index, chunk.path)
 
@@ -65,4 +88,3 @@ def _selection_reason(query: str, chunk: DocumentChunk, query_index: int) -> str
     if chunk.rerank_score >= chunk.score:
         return f"rerank_specificity_query_{query_index}"
     return f"hybrid_score_query_{query_index}"
-

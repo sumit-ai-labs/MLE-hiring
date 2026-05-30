@@ -15,6 +15,7 @@ from evaluation_v2.safety_metrics import prompt_injection_catch_rate, security_i
 from evaluation_v2.tool_metrics import tool_correctness_rate, tool_ordering_correct
 from observability.event_logger import sanitize_text
 from observability.performance_metrics import PerformanceMetrics
+from observability.profiler import StageProfiler
 from observability.trace_exporter import human_report, traces_to_json
 from observability.trace_manager import TraceManager
 
@@ -47,6 +48,14 @@ class V2ObservabilityEvaluationTests(unittest.TestCase):
         metrics.record("classification", 1)
         self.assertEqual(metrics.as_dict()["retrieval"], 5)
         self.assertEqual(metrics.as_dict()["overall_ticket_runtime"], 6)
+
+    def test_stage_profiler_report(self):
+        profiler = StageProfiler()
+        profiler.record("retrieval", 0.25)
+        profiler.record("retrieval", 0.25)
+        report = profiler.report()
+        self.assertEqual(report["stages"]["retrieval"], 0.5)
+        self.assertEqual(report["total_seconds"], 0.5)
 
     def test_evaluation_metrics(self):
         self.assertEqual(precision_at_k(["a.md", "b.md"], {"a.md"}, 2), 0.5)

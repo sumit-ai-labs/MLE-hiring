@@ -19,7 +19,7 @@ def run_shadow_retrieval(
 ) -> tuple[list[DocumentChunk], str]:
     route = route_retrieval(classification, " ".join([query, support_text]))
     plan = expand_query(query, route)
-    v2_chunks, trace = retrieve_many(retriever, plan)
+    v2_chunks, trace = retrieve_many(retriever, plan, seed_results=v1_chunks)
     trace.mismatch_with_v1 = _paths(v1_chunks) != _paths(v2_chunks)
     return v1_chunks, trace.to_json()
 
