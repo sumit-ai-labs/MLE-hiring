@@ -17,8 +17,11 @@ class HybridRetriever:
     def __init__(self, chunks: list[DocumentChunk]):
         self.chunks = chunks
         self.tokenized = [_tokens(chunk.content + " " + chunk.path + " " + chunk.heading) for chunk in chunks]
+        self.token_counters = [Counter(tokens) for tokens in self.tokenized]
+        self.doc_lengths = [len(tokens) or 1 for tokens in self.tokenized]
         self.doc_freq = _doc_freq(self.tokenized)
         self.avg_len = sum(len(tokens) for tokens in self.tokenized) / max(1, len(self.tokenized))
+        self._candidate_index_cache: dict[tuple[str, bool], list[int]] = {}
         self.semantic_backend = _SemanticBackend(chunks)
 
     def retrieve(
@@ -52,9 +55,15 @@ class HybridRetriever:
         return rerank(query, merged, company, product_area, RERANK_TOP_K)
 
     def _candidate_indices(self, company: str, classifier_confidence: float) -> list[int]:
+        cache_key = (company, classifier_confidence >= 0.5)
+        if cache_key in self._candidate_index_cache:
+            return self._candidate_index_cache[cache_key]
         if company in {"claude", "devplatform", "visa"} and classifier_confidence >= 0.5:
-            return [idx for idx, chunk in enumerate(self.chunks) if chunk.company == company]
-        return list(range(len(self.chunks)))
+            indices = [idx for idx, chunk in enumerate(self.chunks) if chunk.company == company]
+        else:
+            indices = list(range(len(self.chunks)))
+        self._candidate_index_cache[cache_key] = indices
+        return indices
 
     def _bm25_scores(self, query: str, indices: Iterable[int]) -> dict[int, float]:
         q_tokens = _tokens(query)
@@ -65,8 +74,8 @@ class HybridRetriever:
         k1 = 1.5
         b = 0.75
         for idx in indices:
-            freqs = Counter(self.tokenized[idx])
-            doc_len = len(self.tokenized[idx]) or 1
+            freqs = self.token_counters[idx]
+            doc_len = self.doc_lengths[idx]
             score = 0.0
             for token in q_tokens:
                 if token not in freqs:
@@ -90,6 +99,7 @@ class _SemanticBackend:
         self.embeddings = None
         self.vectorizer = None
         self.matrix = None
+        self.token_sets = [set(_tokens(chunk.content)) for chunk in chunks]
         texts = [chunk.content[:2000] for chunk in chunks]
         try:
             from sentence_transformers import SentenceTransformer
@@ -130,7 +140,7 @@ class _SemanticBackend:
         q_tokens = set(_tokens(query))
         values = {}
         for idx in index_list:
-            d_tokens = set(_tokens(self.chunks[idx].content))
+            d_tokens = self.token_sets[idx]
             values[idx] = len(q_tokens & d_tokens) / max(1, len(q_tokens | d_tokens))
         return _normalize(values)
 
