@@ -12,7 +12,7 @@ from agent.decision_engine import decide
 from agent.planner import plan_tools
 from agent.responder import generate_response
 from agent.safety import analyze_safety, clean_support_text
-from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, REPO_ROOT, TOOL_SPEC_PATH
+from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, ENABLE_V2_STATE_MACHINE, ENABLE_V2_STRUCTURED_MEMORY, REPO_ROOT, TOOL_SPEC_PATH
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.ingest import ingest_markdown
 from tools.executor import execute_actions
@@ -31,6 +31,11 @@ class TriageAgent:
         self.retriever = HybridRetriever(self.chunks)
         self.registry = ToolRegistry(TOOL_SPEC_PATH)
         self.logger = TriageLogger(log_path)
+        self.memory_store = None
+        if ENABLE_V2_STRUCTURED_MEMORY:
+            from memory.memory_store import MemoryStore
+
+            self.memory_store = MemoryStore()
 
     def process_row(self, row: dict[str, Any], ticket_id: int) -> dict[str, str]:
         issue = _get(row, "issue")
@@ -80,6 +85,8 @@ class TriageAgent:
 
         # -> grounded responder
         response, justification = generate_response(state, safety, decision, retrieved, executed_actions, language)
+
+        self._run_v2_shadow(ticket_id, state, safety, pii, language, classification, decision, validation.actions)
 
         source_documents = _source_documents(retrieved, decision)
         confidence = calibrate_confidence(
@@ -138,6 +145,30 @@ class TriageAgent:
             },
         )
         return output
+
+    def _run_v2_shadow(self, ticket_id, state, safety, pii, language, classification, decision, actions) -> None:
+        if ENABLE_V2_STRUCTURED_MEMORY:
+            from memory.memory_extractor import extract_memory
+
+            memory = extract_memory(state, classification, safety, pii, language, decision, actions)
+            if self.memory_store is not None:
+                self.memory_store.upsert(ticket_id, memory)
+        if ENABLE_V2_STATE_MACHINE:
+            from state_machine.state_machine import build_shadow_lifecycle
+
+            security_signal = None
+            if decision.internal_request_type in {"account_compromise", "fraud", "legal"}:
+                security_signal = decision.internal_request_type
+            elif safety.attack_detected:
+                security_signal = "prompt_injection"
+            build_shadow_lifecycle(
+                ticket_id,
+                identity_verified=state.identity_verified,
+                security_signal=security_signal,
+                risk_level=decision.risk_level,
+                actions=actions,
+                trace_enabled=False,
+            )
 
 
 def _get(row: dict[str, Any], name: str) -> str:

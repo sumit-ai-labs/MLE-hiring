@@ -58,3 +58,4 @@ def _env_flag(name: str, default: bool = False) -> bool:
 ENABLE_V2_POLICY_ENGINE = _env_flag("ENABLE_V2_POLICY_ENGINE", False)
 ENABLE_V2_STATE_MACHINE = _env_flag("ENABLE_V2_STATE_MACHINE", False)
 ENABLE_V2_ROUTED_RETRIEVAL = _env_flag("ENABLE_V2_ROUTED_RETRIEVAL", False)
+ENABLE_V2_STRUCTURED_MEMORY = _env_flag("ENABLE_V2_STRUCTURED_MEMORY", False)
