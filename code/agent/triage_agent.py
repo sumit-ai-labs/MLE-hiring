@@ -12,7 +12,7 @@ from agent.decision_engine import decide
 from agent.planner import plan_tools
 from agent.responder import generate_response
 from agent.safety import analyze_safety, clean_support_text
-from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_POLICY_ENGINE, ENABLE_V2_ROUTED_RETRIEVAL, ENABLE_V2_STATE_MACHINE, ENABLE_V2_STRUCTURED_MEMORY, REPO_ROOT, TOOL_SPEC_PATH
+from config import DATA_DIR, DEFAULT_LOG, ENABLE_V2_OBSERVABILITY, ENABLE_V2_POLICY_ENGINE, ENABLE_V2_ROUTED_RETRIEVAL, ENABLE_V2_STATE_MACHINE, ENABLE_V2_STRUCTURED_MEMORY, REPO_ROOT, TOOL_SPEC_PATH
 from retrieval.hybrid_retriever import HybridRetriever
 from retrieval.ingest import ingest_markdown
 from tools.executor import execute_actions
@@ -36,31 +36,43 @@ class TriageAgent:
             from memory.memory_store import MemoryStore
 
             self.memory_store = MemoryStore()
+        self.trace_manager = None
+        if ENABLE_V2_OBSERVABILITY:
+            from observability.trace_manager import TraceManager
+
+            self.trace_manager = TraceManager()
 
     def process_row(self, row: dict[str, Any], ticket_id: int) -> dict[str, str]:
+        if self.trace_manager is not None:
+            self.trace_manager.start_ticket(ticket_id)
         issue = _get(row, "issue")
         subject = _get(row, "subject")
         input_company = _get(row, "company")
 
         # CSV row -> conversation parser
         state = parse_issue(issue, subject, input_company)
+        self._trace_stage(ticket_id, "parser")
 
         # -> safety layer
         safety = analyze_safety(" ".join([state.subject, state.full_text]))
         support_text = clean_support_text(state.full_text)
+        self._trace_stage(ticket_id, "safety")
 
         # -> PII detection
         pii = detect_pii(" ".join([state.subject, state.full_text]))
         safe_support_text = detect_pii(support_text).masked_text
+        self._trace_stage(ticket_id, "pii")
 
         # -> language detection
         language = detect_language(state.latest_user_text or state.full_text)
+        self._trace_stage(ticket_id, "language")
 
         # -> company classifier -> product classifier
         classification = classify(safe_support_text, subject, input_company)
 
         # -> conflict resolver
         classification = resolve_conflicts(state, classification)
+        self._trace_stage(ticket_id, "classification")
 
         # -> retrieval router -> hybrid retriever -> reranker
         retrieval_query = " ".join([subject, safe_support_text, classification.product_area]).strip()
@@ -81,6 +93,7 @@ class TriageAgent:
                 classification,
                 safe_support_text,
             )
+        self._trace_stage(ticket_id, "retrieval")
 
         # -> decision engine
         decision = decide(state, safety, classification, len(retrieved))
@@ -88,16 +101,20 @@ class TriageAgent:
             from policy_engine.adapter import decide_with_policy_engine
 
             decision = decide_with_policy_engine(decision, state, safety, classification, len(retrieved))
+        self._trace_stage(ticket_id, "decision")
 
         # -> tool planner -> validator -> executor
         proposed_actions = plan_tools(decision, state)
+        self._trace_stage(ticket_id, "tool_planning")
         validation = validate_actions(proposed_actions, self.registry, state, decision.internal_request_type)
+        self._trace_stage(ticket_id, "tool_validation")
         executed_actions = execute_actions(validation.actions)
 
         # -> grounded responder
         response, justification = generate_response(state, safety, decision, retrieved, executed_actions, language)
+        self._trace_stage(ticket_id, "response_generation")
 
-        self._run_v2_shadow(ticket_id, state, safety, pii, language, classification, decision, validation.actions)
+        memory_trace, state_trace = self._run_v2_shadow(ticket_id, state, safety, pii, language, classification, decision, validation.actions)
 
         source_documents = _source_documents(retrieved, decision)
         confidence = calibrate_confidence(
@@ -123,6 +140,21 @@ class TriageAgent:
             confidence = min(confidence, _invalid_confidence_cap(state.full_text))
 
         actions_taken = json.dumps(validation.actions, sort_keys=True, separators=(",", ":"))
+        self._record_observability_trace(
+            ticket_id,
+            classification,
+            memory_trace,
+            state_trace,
+            v2_retrieval_trace,
+            retrieved,
+            decision,
+            validation.actions,
+            validation.valid,
+            validation.errors,
+            confidence,
+            final_risk_level,
+            response,
+        )
 
         output = {
             "issue": issue,
@@ -158,11 +190,14 @@ class TriageAgent:
         )
         return output
 
-    def _run_v2_shadow(self, ticket_id, state, safety, pii, language, classification, decision, actions) -> None:
+    def _run_v2_shadow(self, ticket_id, state, safety, pii, language, classification, decision, actions):
+        memory_trace = {}
+        state_trace = {}
         if ENABLE_V2_STRUCTURED_MEMORY:
             from memory.memory_extractor import extract_memory
 
             memory = extract_memory(state, classification, safety, pii, language, decision, actions)
+            memory_trace = memory.to_dict()
             if self.memory_store is not None:
                 self.memory_store.upsert(ticket_id, memory)
         if ENABLE_V2_STATE_MACHINE:
@@ -173,7 +208,7 @@ class TriageAgent:
                 security_signal = decision.internal_request_type
             elif safety.attack_detected:
                 security_signal = "prompt_injection"
-            build_shadow_lifecycle(
+            ticket_state = build_shadow_lifecycle(
                 ticket_id,
                 identity_verified=state.identity_verified,
                 security_signal=security_signal,
@@ -181,6 +216,63 @@ class TriageAgent:
                 actions=actions,
                 trace_enabled=False,
             )
+            state_trace = {
+                "current_state": ticket_state.current_state.value,
+                "history": ticket_state.trace(),
+                "verification_status": ticket_state.verification_status,
+                "refund_eligibility": ticket_state.refund_eligibility,
+                "escalation_status": ticket_state.escalation_status,
+            }
+        return memory_trace, state_trace
+
+    def _trace_stage(self, ticket_id: int, stage: str) -> None:
+        if self.trace_manager is not None:
+            self.trace_manager.record_stage(ticket_id, stage, 1)
+
+    def _record_observability_trace(
+        self,
+        ticket_id,
+        classification,
+        memory_trace,
+        state_trace,
+        v2_retrieval_trace,
+        retrieved,
+        decision,
+        actions,
+        validation_valid,
+        validation_errors,
+        confidence,
+        risk_level,
+        response,
+    ) -> None:
+        if self.trace_manager is None:
+            return
+        trace = self.trace_manager.get(ticket_id)
+        if trace is None:
+            return
+        trace.classification = {
+            "company": classification.company,
+            "product": classification.display_company,
+            "product_area": classification.product_area,
+            "issue": classification.internal_request_type,
+            "confidence": classification.confidence,
+        }
+        trace.memory_extraction = memory_trace
+        trace.state_machine = state_trace
+        trace.policy = {"enabled": ENABLE_V2_POLICY_ENGINE, "mode": "shadow_compare"}
+        trace.retrieval = {
+            "route_trace": v2_retrieval_trace,
+            "selected_docs": [chunk.path for chunk in retrieved[:5]],
+            "rerank_scores": [chunk.rerank_score for chunk in retrieved[:5]],
+        }
+        trace.confidence = {"score": round(float(confidence), 2)}
+        trace.tool_planning = actions
+        trace.tool_validation = {"valid": bool(validation_valid), "errors": validation_errors}
+        trace.fallbacks_triggered = _fallbacks(v2_retrieval_trace)
+        trace.gemini_usage = {"response_polish_enabled": False}
+        trace.risk_classification = {"risk_level": risk_level, "decision_risk_level": decision.risk_level}
+        trace.response_generation = {"mode": decision.response_mode, "response_length": len(response or "")}
+        self.trace_manager.finalize_ticket(ticket_id)
 
 
 def _get(row: dict[str, Any], name: str) -> str:
@@ -237,3 +329,13 @@ def _retrieval_diagnostics(company_route: str, route_confidence: float, chunks) 
         )
     parts.append("]")
     return "\n".join(parts)
+
+
+def _fallbacks(v2_retrieval_trace: str) -> list[str]:
+    if not v2_retrieval_trace:
+        return []
+    try:
+        parsed = json.loads(v2_retrieval_trace)
+    except Exception:
+        return ["v2_retrieval_trace_parse_failed"]
+    return ["v2_retrieval_mismatch_fallback_to_v1"] if parsed.get("mismatch_with_v1") else []
